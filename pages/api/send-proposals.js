@@ -18,7 +18,11 @@ export default async function handler(req, res) {
 
   // Build slot-options list
   const options = (slots || [])
-    .map(s => `• ${new Date(s.start).toLocaleString()} — ${new Date(s.end).toLocaleTimeString()}`)
+    .map(
+      (s) => `• ${new Date(s.start).toLocaleString()} — ${new Date(
+        s.end
+      ).toLocaleTimeString()}`
+    )
     .join("\n");
 
   // Draft via Gen AI SDK
@@ -40,27 +44,42 @@ export default async function handler(req, res) {
   auth.setCredentials({ access_token: accessToken, refresh_token: refreshToken });
   const gmail = google.gmail({ version: "v1", auth });
 
-  // Send with custom label applied
+  // Send message
   const rawMessage = [
     `To: ${email}`,
     `Subject: Meeting about ${subject}`,
     "",
-    draft
+    draft,
   ].join("\r\n");
   const raw = Buffer.from(rawMessage).toString("base64");
 
+  let messageId;
   try {
-    await gmail.users.messages.send({
+    // 1) Send the email
+    const sendRes = await gmail.users.messages.send({
       userId: "me",
-      requestBody: {
-        raw,
-        labelIds: [meetingSchedulerLabelId]
-      }
+      requestBody: { raw },
     });
+    messageId = sendRes.data.id;
   } catch (err) {
     console.error("Gmail send error:", err);
     return res.status(500).json({ error: "Gmail send error", details: err.message });
   }
 
-  return res.status(200).json({ message: "Proposal sent!", draft });
+  try {
+    // 2) Apply the custom label to the sent message
+    await gmail.users.messages.modify({
+      userId: "me",
+      id: messageId,
+      requestBody: {
+        addLabelIds: [meetingSchedulerLabelId],
+      },
+    });
+  } catch (err) {
+    console.error("Error labeling message:", err);
+    return res.status(500).json({ error: "Labeling error", details: err.message });
+  }
+
+  // 3) Return success
+  return res.status(200).json({ message: "Proposal sent and labeled!", draft });
 }
