@@ -4,6 +4,7 @@ import { GoogleGenAI } from "@google/genai";
 // This endpoint will receive Gmail push notifications
 export default async function handler(req, res) {
   // Acknowledge immediately
+  console.log("[Webhook] payload:", JSON.stringify(req.body));
   res.status(200).end();
 
   // Parse the Pub/Sub push payload (Gmail watch notification)
