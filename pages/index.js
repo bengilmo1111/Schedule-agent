@@ -7,11 +7,35 @@ export default function Home() {
   const [slots, setSlots] = useState([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
+  const [watchMessage, setWatchMessage] = useState("");
 
   if (!session) {
-    return <button onClick={() => signIn("google")}>Sign in with Google</button>;
+    return (
+      <div className="container">
+        <button className="btn primary" onClick={() => signIn("google")}>
+          Sign in with Google
+        </button>
+      </div>
+    );
   }
 
+  // Invoke Gmail watch
+  const invokeWatch = async () => {
+    setLoading(true);
+    setWatchMessage("");
+    try {
+      const res = await fetch("/api/gmail/watch");
+      const data = await res.json();
+      setWatchMessage(res.ok ? "✅ Gmail watch configured" : `⚠️ ${data.error || data.message}`);
+    } catch (err) {
+      console.error(err);
+      setWatchMessage("Error setting up Gmail watch. See console.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Find available slots
   const findSlots = async (e) => {
     e.preventDefault();
     setLoading(true);
@@ -27,16 +51,16 @@ export default function Home() {
         }),
       });
       const data = await res.json();
-      console.log("Fetched slots:", data.slots);
       setSlots(data.slots || []);
     } catch (err) {
-      console.error("Error fetching slots:", err);
-      setMessage("Error fetching slots. Check console.");
+      console.error(err);
+      setMessage("Error fetching slots.");
     } finally {
       setLoading(false);
     }
   };
 
+  // Send proposal email
   const sendProposals = async () => {
     setLoading(true);
     setMessage("");
@@ -51,98 +75,90 @@ export default function Home() {
           subject: form.subject,
           notes: form.notes,
           slots,
+          meetingSchedulerLabelId: "MeetingScheduler"
         }),
       });
-      const text = await res.text();
-      if (!res.ok) {
-        console.error("Error sending proposal, response text:", text);
-        setMessage(`Error ${res.status}: ${res.statusText}`);
-      } else {
-        let data;
-        try {
-          data = JSON.parse(text);
-        } catch (parseErr) {
-          console.error("Error parsing JSON response:", parseErr, text);
-          setMessage("Invalid JSON response; check console.");
-          return;
-        }
-        console.log("Send proposals response:", data);
-        setMessage(data.message || "Proposal sent!");
-      }
+      const data = await res.json();
+      setMessage(res.ok ? `✅ ${data.message}` : `⚠️ ${data.error || data.message}`);
     } catch (err) {
-      console.error("Error sending proposal:", err);
-      setMessage("Error sending proposal. Check console.");
+      console.error(err);
+      setMessage("Error sending proposal.");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div style={{ padding: 20 }}>
-      <button onClick={() => signOut()}>Sign out</button>
-      <form onSubmit={findSlots} style={{ marginBottom: 20 }}>
-        <div>
-          <label>Attendee Email:</label>
-          <input
-            type="email"
-            placeholder="Attendee email"
-            required
-            value={form.email}
-            onChange={(e) => setForm({ ...form, email: e.target.value })}
-          />
-        </div>
-        <div>
-          <label>Duration (mins):</label>
-          <input
-            type="number"
-            min="5"
-            max="120"
-            step="5"
-            required
-            value={form.duration}
-            onChange={(e) => setForm({ ...form, duration: +e.target.value })}
-          />
-        </div>
-        <div>
-          <label>Subject:</label>
-          <input
-            type="text"
-            placeholder="Subject"
-            required
-            value={form.subject}
-            onChange={(e) => setForm({ ...form, subject: e.target.value })}
-          />
-        </div>
-        <div>
-          <label>Notes:</label>
-          <textarea
-            placeholder="Notes"
-            value={form.notes}
-            onChange={(e) => setForm({ ...form, notes: e.target.value })}
-          />
-        </div>
-        <button type="submit" disabled={loading}>
+    <div className="container">
+      <div className="header">
+        <h1>Meeting Scheduler</h1>
+        <button className="btn secondary" onClick={() => signOut()}>
+          Sign Out
+        </button>
+      </div>
+
+      <button className="btn secondary" onClick={invokeWatch} disabled={loading}>
+        {loading ? "Setting up…" : "Setup Gmail Watch"}
+      </button>
+      {watchMessage && <div className="message info">{watchMessage}</div>}
+
+      <form onSubmit={findSlots} className="form">
+        <label>Attendee Email</label>
+        <input
+          type="email"
+          required
+          value={form.email}
+          onChange={(e) => setForm({ ...form, email: e.target.value })}
+        />
+
+        <label>Duration (mins)</label>
+        <input
+          type="number"
+          min={5}
+          max={120}
+          step={5}
+          required
+          value={form.duration}
+          onChange={(e) => setForm({ ...form, duration: +e.target.value })}
+        />
+
+        <label>Subject</label>
+        <input
+          type="text"
+          required
+          value={form.subject}
+          onChange={(e) => setForm({ ...form, subject: e.target.value })}
+        />
+
+        <label>Notes</label>
+        <textarea
+          value={form.notes}
+          onChange={(e) => setForm({ ...form, notes: e.target.value })}
+        />
+
+        <button className="btn primary" type="submit" disabled={loading}>
           {loading ? "Finding…" : "Find Available Times"}
         </button>
       </form>
 
       {slots.length > 0 && (
-        <div>
-          <h3>Available Slots ({slots.length}):</h3>
+        <div className="slots">
+          <h3>Available Slots ({slots.length})</h3>
           <ul>
             {slots.map((s, i) => (
               <li key={i}>
-                {new Date(s.start).toLocaleString()} – {new Date(s.end).toLocaleTimeString()}
+                {new Date(s.start).toLocaleString()} –{" "}
+                {new Date(s.end).toLocaleTimeString()}
               </li>
             ))}
           </ul>
-          <button onClick={sendProposals} disabled={loading}>
+          <button className="btn primary" onClick={sendProposals} disabled={loading}>
             {loading ? "Sending…" : "Send Proposal Email"}
           </button>
         </div>
       )}
 
-      {message && <p>{message}</p>}
+      {message && <div className="message success">{message}</div>}
     </div>
   );
 }
