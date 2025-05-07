@@ -14,7 +14,7 @@ export default async function handler(req, res) {
     return res.status(405).end(`Method ${req.method} Not Allowed`);
   }
 
-  const { accessToken, refreshToken, email, subject, notes, slots, meetingSchedulerLabelId } = req.body;
+  const { accessToken, refreshToken, email, subject, notes, slots } = req.body;
 
   // Build slot-options list
   const options = (slots || [])
@@ -24,6 +24,29 @@ export default async function handler(req, res) {
       ).toLocaleTimeString()}`
     )
     .join("\n");
+
+  // Initialize Gmail client
+  const auth = new google.auth.OAuth2();
+  auth.setCredentials({ access_token: accessToken, refresh_token: refreshToken });
+  const gmail = google.gmail({ version: "v1", auth });
+
+  // Ensure custom label exists and get its ID
+  let meetingSchedulerLabelId;
+  try {
+    const labelsRes = await gmail.users.labels.list({ userId: "me" });
+    let schedLabel = (labelsRes.data.labels || []).find(l => l.name === "MeetingScheduler");
+    if (!schedLabel) {
+      const createRes = await gmail.users.labels.create({
+        userId: "me",
+        requestBody: { name: "MeetingScheduler" }
+      });
+      schedLabel = createRes.data;
+    }
+    meetingSchedulerLabelId = schedLabel.id;
+  } catch (err) {
+    console.error("Label init error:", err);
+    return res.status(500).json({ error: "Label init error", details: err.message });
+  }
 
   // Draft via Gen AI SDK
   let draft;
@@ -39,26 +62,20 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "GenAI draft error", details: err.message });
   }
 
-  // Configure Gmail client
-  const auth = new google.auth.OAuth2();
-  auth.setCredentials({ access_token: accessToken, refresh_token: refreshToken });
-  const gmail = google.gmail({ version: "v1", auth });
-
-  // Send message
+  // Send the email
   const rawMessage = [
     `To: ${email}`,
     `Subject: Meeting about ${subject}`,
     "",
-    draft,
+    draft
   ].join("\r\n");
   const raw = Buffer.from(rawMessage).toString("base64");
 
   let messageId;
   try {
-    // 1) Send the email
     const sendRes = await gmail.users.messages.send({
       userId: "me",
-      requestBody: { raw },
+      requestBody: { raw }
     });
     messageId = sendRes.data.id;
   } catch (err) {
@@ -66,20 +83,18 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Gmail send error", details: err.message });
   }
 
+  // Apply the custom label to the sent message
   try {
-    // 2) Apply the custom label to the sent message
     await gmail.users.messages.modify({
       userId: "me",
       id: messageId,
-      requestBody: {
-        addLabelIds: [meetingSchedulerLabelId],
-      },
+      requestBody: { addLabelIds: [meetingSchedulerLabelId] }
     });
   } catch (err) {
     console.error("Error labeling message:", err);
     return res.status(500).json({ error: "Labeling error", details: err.message });
   }
 
-  // 3) Return success
+  // Return success
   return res.status(200).json({ message: "Proposal sent and labeled!", draft });
 }
