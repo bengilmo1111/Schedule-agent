@@ -11,16 +11,16 @@ generator client {
 
 // Account model: stores OAuth tokens per provider
 model Account {
-  id                String   @id @default(cuid())
+  id                String  @id @default(cuid())
   userId            String
   type              String
   provider          String
   providerAccountId String
-  refresh_token     String?  // persisted by NextAuth
-  access_token      String?  // persisted by NextAuth
+  refresh_token     String? // persisted by NextAuth
+  access_token      String? // persisted by NextAuth
 
   // Relation to User
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 // Session model: tracks NextAuth sessions
@@ -31,20 +31,21 @@ model Session {
   expires      DateTime
 
   // Relation to User
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 // User model: represents application users
 model User {
-  id            String     @id @default(cuid())
+  id            String    @id @default(cuid())
   name          String?
-  email         String?    @unique
+  email         String?   @unique
   emailVerified DateTime?
   image         String?
 
   // Relations
-  sessions      Session[]
-  accounts      Account[]
+  sessions       Session[]
+  accounts       Account[]
+  meetingThreads MeetingThread[]
 }
 
 // MeetingThread: links email threadId to user and scheduling metadata
@@ -53,9 +54,9 @@ model MeetingThread {
   userId        String
   attendeeEmail String
   subject       String
-  slots         String   // JSON-serialized list of slot options
+  slots         String // JSON-serialized list of slot options
   createdAt     DateTime @default(now())
 
   // Relation to User
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
