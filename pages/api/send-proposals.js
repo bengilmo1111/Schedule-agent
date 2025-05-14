@@ -1,5 +1,7 @@
 import { google } from "googleapis";
 import { GoogleGenAI } from "@google/genai";
+import { getSession } from "next-auth/react";
+import prisma from "../../lib/prisma";
 
 export default async function handler(req, res) {
   // CORS preflight support
@@ -12,6 +14,12 @@ export default async function handler(req, res) {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST, OPTIONS");
     return res.status(405).end(`Method ${req.method} Not Allowed`);
+  }
+
+  // 1) Check user session
+const session = await getSession({ req });
+   if (!session) {
+    return res.status(401).json({ error: "Not authenticated" });
   }
 
   const { accessToken, refreshToken, email, subject, notes, slots } = req.body;
@@ -95,6 +103,19 @@ export default async function handler(req, res) {
     return res.status(500).json({ error: "Labeling error", details: err.message });
   }
 
-  // Return success
-  return res.status(200).json({ message: "Proposal sent and labeled!", draft });
-}
+  const threadId = sendRes.data.threadId;
+
+  // 6) Persist mapping in DB
+  await prisma.meetingThread.create({
+    data: {
+      threadId,
+      userId:        session.user.email,       // or session.user.id if you expose it
+      attendeeEmail: email,
+      subject,
+      slots:         JSON.stringify(slots)
+    }
+  });
+
+  // 7) Return success
+  return res.status(200).json({ message: "Proposal sent, labeled & recorded!", draft });
+ }
