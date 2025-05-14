@@ -67,6 +67,7 @@ export default function Home() {
     try {
       const res = await fetch("/api/send-proposals", {
         method: "POST",
+        credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           accessToken: session.user.accessToken,

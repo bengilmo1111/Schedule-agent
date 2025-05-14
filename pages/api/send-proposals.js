@@ -1,7 +1,8 @@
 // pages/api/send-proposals.js
 import { google } from "googleapis";
 import { GoogleGenAI } from "@google/genai";
-import { getSession } from "next-auth/react";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "./auth/[...nextauth]";
 import prisma from "../../lib/prisma";
 
 export default async function handler(req, res) {
@@ -18,10 +19,10 @@ export default async function handler(req, res) {
   }
 
   // 1) Authenticate user session
-  const session = await getSession({ req });
-  if (!session) {
-    return res.status(401).json({ error: "Not authenticated" });
-  }
+  const session = await getServerSession(req, res, authOptions);
+   if (!session) {
+     return res.status(401).json({ error: "Not authenticated" });
+   }
   const accessToken  = session.user.accessToken;
   const refreshToken = session.user.refreshToken;
 
