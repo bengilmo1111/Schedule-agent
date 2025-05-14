@@ -20,16 +20,31 @@ export default async function handler(req, res) {
 
   // 1) Authenticate user session
   const session = await getServerSession(req, res, authOptions);
-   if (!session) {
-     return res.status(401).json({ error: "Not authenticated" });
-   }
+  if (!session) {
+    return res.status(401).json({ error: "Not authenticated" });
+  }
   const accessToken  = session.user.accessToken;
   const refreshToken = session.user.refreshToken;
 
   // 2) Pull form data
   const { email, subject, notes, slots } = req.body;
 
-  // 3) Build the time-slot list
+  // 3) Lookup the user in the database to get proper userId
+  let userRecord;
+  try {
+    userRecord = await prisma.user.findUnique({
+      where: { email: session.user.email }
+    });
+    if (!userRecord) {
+      return res.status(500).json({ error: "User lookup error", details: "User not found" });
+    }
+  } catch (err) {
+    console.error("User lookup error:", err);
+    return res.status(500).json({ error: "User lookup error", details: err.message });
+  }
+  const userId = userRecord.id;
+
+  // 4) Build the time-slot list
   const options = (slots || [])
     .map(
       (s) => `• ${new Date(s.start).toLocaleString()} — ${new Date(
@@ -38,12 +53,12 @@ export default async function handler(req, res) {
     )
     .join("\n");
 
-  // 4) Initialize Gmail client
+  // 5) Initialize Gmail client
   const auth = new google.auth.OAuth2();
   auth.setCredentials({ access_token: accessToken, refresh_token: refreshToken });
   const gmail = google.gmail({ version: "v1", auth });
 
-  // 5) Ensure “MeetingScheduler” label exists & get its ID
+  // 6) Ensure “MeetingScheduler” label exists & get its ID
   let meetingSchedulerLabelId;
   try {
     const labelsRes = await gmail.users.labels.list({ userId: "me" });
@@ -65,7 +80,7 @@ export default async function handler(req, res) {
       .json({ error: "Label init error", details: err.message });
   }
 
-  // 6) Draft email via Gemini
+  // 7) Draft email via Gemini
   let draft;
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_AI_API_KEY });
@@ -81,7 +96,7 @@ export default async function handler(req, res) {
       .json({ error: "GenAI draft error", details: err.message });
   }
 
-  // 7) Send the email
+  // 8) Send the email
   const rawMessage = [
     `To: ${email}`,
     `Subject: Meeting about ${subject}`,
@@ -106,7 +121,7 @@ export default async function handler(req, res) {
   const messageId = sendRes.data.id;
   const threadId  = sendRes.data.threadId;
 
-  // 8) Apply the custom label
+  // 9) Apply the custom label
   try {
     await gmail.users.messages.modify({
       userId: "me",
@@ -120,15 +135,15 @@ export default async function handler(req, res) {
       .json({ error: "Labeling error", details: err.message });
   }
 
-  // 9) Persist the new thread in your database
+  // 10) Persist the new thread in your database
   try {
     await prisma.meetingThread.create({
       data: {
         threadId,
-        userId:        session.user.email, // or session.user.id
+        userId,
         attendeeEmail: email,
         subject,
-        slots:         JSON.stringify(slots),
+        slots: JSON.stringify(slots),
       },
     });
   } catch (err) {
@@ -138,7 +153,7 @@ export default async function handler(req, res) {
       .json({ error: "Database error", details: err.message });
   }
 
-  // 10) Return success
+  // 11) Return success
   return res
     .status(200)
     .json({ message: "Proposal sent, labeled & recorded!", draft });
