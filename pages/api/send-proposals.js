@@ -29,18 +29,23 @@ export default async function handler(req, res) {
   // 2) Pull form data
   const { email, subject, notes, slots } = req.body;
 
-  // 3) Lookup the user in the database to get proper userId
+  // 3) Upsert the user in the database to get proper userId
   let userRecord;
   try {
-    userRecord = await prisma.user.findUnique({
-      where: { email: session.user.email }
+    userRecord = await prisma.user.upsert({
+      where: { email: session.user.email },
+      create: {
+        email: session.user.email,
+        name:  session.user.name || null,
+        image: session.user.image || null
+      },
+      update: {}
     });
-    if (!userRecord) {
-      return res.status(500).json({ error: "User lookup error", details: "User not found" });
-    }
   } catch (err) {
-    console.error("User lookup error:", err);
-    return res.status(500).json({ error: "User lookup error", details: err.message });
+    console.error("User upsert error:", err);
+    return res
+      .status(500)
+      .json({ error: "User upsert error", details: err.message });
   }
   const userId = userRecord.id;
 
