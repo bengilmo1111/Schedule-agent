@@ -1,0 +1,61 @@
+// prisma/schema.prisma
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// Account model: stores OAuth tokens per provider
+model Account {
+  id                String   @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?  // persisted by NextAuth
+  access_token      String?  // persisted by NextAuth
+
+  // Relation to User
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// Session model: tracks NextAuth sessions
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  // Relation to User
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// User model: represents application users
+model User {
+  id            String     @id @default(cuid())
+  name          String?
+  email         String?    @unique
+  emailVerified DateTime?
+  image         String?
+
+  // Relations
+  sessions      Session[]
+  accounts      Account[]
+}
+
+// MeetingThread: links email threadId to user and scheduling metadata
+model MeetingThread {
+  threadId      String   @id
+  userId        String
+  attendeeEmail String
+  subject       String
+  slots         String   // JSON-serialized list of slot options
+  createdAt     DateTime @default(now())
+
+  // Relation to User
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
