@@ -42,14 +42,11 @@ export default function Home() {
     setMessage("");
     try {
       const res = await fetch("/api/find-slots", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          accessToken: session.user.accessToken,
-          refreshToken: session.user.refreshToken,
-          duration: form.duration,
-        }),
-      });
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ duration: form.duration }),
+        });
       const data = await res.json();
       setSlots(data.slots || []);
     } catch (err) {

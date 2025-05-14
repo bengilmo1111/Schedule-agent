@@ -1,62 +1,103 @@
+// pages/api/find-slots.js
 import { google } from "googleapis";
+import { getServerSession } from "next-auth/next";
+import { authOptions } from "./auth/[...nextauth]";
+import prisma from "../../lib/prisma";
 
 export default async function handler(req, res) {
-  const { accessToken, refreshToken, duration } = req.body;
-  // 1) Set up Auth client
-  const auth = new google.auth.OAuth2();
-  auth.setCredentials({ access_token: accessToken, refresh_token: refreshToken });
+  // CORS preflight support
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") {
+    res.setHeader("Allow", "POST, OPTIONS");
+    return res.status(405).end(`Method ${req.method} Not Allowed`);
+  }
 
-  // 2) Query freebusy for the next 7 days
-  const cal = google.calendar({ version: "v3", auth });
-  const now = new Date();
-  const weekLater = new Date(now);
-  weekLater.setDate(now.getDate() + 7);
+  // 1) Authenticate session
+  const session = await getServerSession(req, res, authOptions);
+  if (!session) return res.status(401).json({ error: "Not authenticated" });
 
-  const fb = await cal.freebusy.query({
-    requestBody: {
-      timeMin: now.toISOString(),
-      timeMax: weekLater.toISOString(),
-      timeZone: "Pacific/Auckland",
-      items: [{ id: "primary" }],
-    },
+  // 2) Look up user in DB
+  const user = await prisma.user.findUnique({ where: { email: session.user.email } });
+  if (!user) return res.status(500).json({ error: "User not found" });
+
+  // 3) Fetch OAuth tokens from Account table
+  const account = await prisma.account.findFirst({
+    where: { userId: user.id, provider: "google" }
   });
+  if (!account?.access_token || !account?.refresh_token) {
+    return res.status(500).json({ error: "OAuth tokens missing for user" });
+  }
 
-  const busy = fb.data.calendars.primary.busy;
-  // 3) Compute open slots (helper below)
-  const slots = computeOpenSlots(busy, duration);
+  // 4) Build authenticated Calendar client
+  const oauth2Client = new google.auth.OAuth2();
+  oauth2Client.setCredentials({
+    access_token:  account.access_token,
+    refresh_token: account.refresh_token
+  });
+  const calendar = google.calendar({ version: "v3", auth: oauth2Client });
 
-  res.status(200).json({ slots: slots.slice(0, 5) });
-}
+  // 5) Read duration
+  const { duration = 30 } = req.body;
 
-// Simple helper—find gaps of at least “duration” minutes between 9–17 each day
-function computeOpenSlots(busy, duration) {
+  // 6) Compute free/busy window for next 7 days
+  const now = new Date();
+  const timeMin = now.toISOString();
+  const timeMax = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  let busy;
+  try {
+    const fbRes = await calendar.freebusy.query({
+      requestBody: {
+        timeMin,
+        timeMax,
+        timeZone: "Pacific/Auckland",
+        items: [{ id: "primary" }]
+      }
+    });
+    busy = fbRes.data.calendars.primary.busy || [];
+  } catch (err) {
+    console.error("Free/busy error:", err);
+    return res.status(500).json({ error: "Free/busy query failed", details: err.message });
+  }
+
+  // 7) Compute open slots between 9–17 each day
   const slots = [];
   const dayMillis = 24 * 60 * 60 * 1000;
   const startHour = 9, endHour = 17;
-
-  const startDate = new Date();
   for (let i = 0; i < 7; i++) {
-    const day = new Date(startDate.getTime() + i * dayMillis);
+    const day = new Date(now.getTime() + i * dayMillis);
     const dayStart = new Date(day.setHours(startHour, 0, 0, 0));
     const dayEnd   = new Date(day.setHours(endHour,   0, 0, 0));
-    let cursor = dayStart;
+    let cursor = dayStart.getTime();
 
-    // sort and filter busy events for this day
     const todayBusy = busy
-      .map(b => ({ start: new Date(b.start), end: new Date(b.end) }))
-      .filter(b => b.end > dayStart && b.start < dayEnd)
+      .map(b => ({ start: new Date(b.start).getTime(), end: new Date(b.end).getTime() }))
+      .filter(b => b.end > dayStart.getTime() && b.start < dayEnd.getTime())
       .sort((a, b) => a.start - b.start);
 
     for (const b of todayBusy) {
-      if ((b.start - cursor) / 60000 >= duration) {
-        slots.push({ start: cursor, end: new Date(cursor.getTime() + duration * 60000) });
+      while (cursor + duration * 60000 <= b.start) {
+        slots.push({
+          start: new Date(cursor).toISOString(),
+          end:   new Date(cursor + duration * 60000).toISOString()
+        });
+        cursor += duration * 60000;
       }
-      cursor = new Date(Math.max(cursor, b.end));
+      cursor = Math.max(cursor, b.end);
     }
-    if ((dayEnd - cursor) / 60000 >= duration) {
-      slots.push({ start: cursor, end: new Date(cursor.getTime() + duration * 60000) });
+
+    while (cursor + duration * 60000 <= dayEnd.getTime()) {
+      slots.push({
+        start: new Date(cursor).toISOString(),
+        end:   new Date(cursor + duration * 60000).toISOString()
+      });
+      cursor += duration * 60000;
     }
   }
 
-  return slots;
+  // 8) Return the first 3 slots
+  return res.status(200).json({ slots: slots.slice(0, 3) });
 }
