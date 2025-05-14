@@ -1,10 +1,11 @@
+// pages/api/send-proposals.js
 import { google } from "googleapis";
 import { GoogleGenAI } from "@google/genai";
 import { getSession } from "next-auth/react";
 import prisma from "../../lib/prisma";
 
 export default async function handler(req, res) {
-  // CORS preflight support
+  // 0) CORS preflight support
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
@@ -16,15 +17,18 @@ export default async function handler(req, res) {
     return res.status(405).end(`Method ${req.method} Not Allowed`);
   }
 
-  // 1) Check user session
-const session = await getSession({ req });
-   if (!session) {
+  // 1) Authenticate user session
+  const session = await getSession({ req });
+  if (!session) {
     return res.status(401).json({ error: "Not authenticated" });
   }
+  const accessToken  = session.user.accessToken;
+  const refreshToken = session.user.refreshToken;
 
-  const { accessToken, refreshToken, email, subject, notes, slots } = req.body;
+  // 2) Pull form data
+  const { email, subject, notes, slots } = req.body;
 
-  // Build slot-options list
+  // 3) Build the time-slot list
   const options = (slots || [])
     .map(
       (s) => `• ${new Date(s.start).toLocaleString()} — ${new Date(
@@ -33,89 +37,108 @@ const session = await getSession({ req });
     )
     .join("\n");
 
-  // Initialize Gmail client
+  // 4) Initialize Gmail client
   const auth = new google.auth.OAuth2();
   auth.setCredentials({ access_token: accessToken, refresh_token: refreshToken });
   const gmail = google.gmail({ version: "v1", auth });
 
-  // Ensure custom label exists and get its ID
+  // 5) Ensure “MeetingScheduler” label exists & get its ID
   let meetingSchedulerLabelId;
   try {
     const labelsRes = await gmail.users.labels.list({ userId: "me" });
-    let schedLabel = (labelsRes.data.labels || []).find(l => l.name === "MeetingScheduler");
+    let schedLabel = (labelsRes.data.labels || []).find(
+      (l) => l.name === "MeetingScheduler"
+    );
     if (!schedLabel) {
       const createRes = await gmail.users.labels.create({
         userId: "me",
-        requestBody: { name: "MeetingScheduler" }
+        requestBody: { name: "MeetingScheduler" },
       });
       schedLabel = createRes.data;
     }
     meetingSchedulerLabelId = schedLabel.id;
   } catch (err) {
     console.error("Label init error:", err);
-    return res.status(500).json({ error: "Label init error", details: err.message });
+    return res
+      .status(500)
+      .json({ error: "Label init error", details: err.message });
   }
 
-  // Draft via Gen AI SDK
+  // 6) Draft email via Gemini
   let draft;
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_AI_API_KEY });
     const response = await ai.models.generateContent({
       model: "gemini-2.0-flash",
-      contents: `You are a helpful assistant. Write a polite email to ${email} proposing a meeting about "${subject}".\nHere are some times:\n\n${options}\n\nNotes: ${notes}`
+      contents: `You are a helpful assistant. Write a polite email to ${email} proposing a meeting about "${subject}".\nHere are some times:\n\n${options}\n\nNotes: ${notes}`,
     });
     draft = response.text.trim();
   } catch (err) {
     console.error("GenAI draft error:", err);
-    return res.status(500).json({ error: "GenAI draft error", details: err.message });
+    return res
+      .status(500)
+      .json({ error: "GenAI draft error", details: err.message });
   }
 
-  // Send the email
+  // 7) Send the email
   const rawMessage = [
     `To: ${email}`,
     `Subject: Meeting about ${subject}`,
     "",
-    draft
+    draft,
   ].join("\r\n");
   const raw = Buffer.from(rawMessage).toString("base64");
 
-  let messageId;
+  let sendRes;
   try {
-    const sendRes = await gmail.users.messages.send({
+    sendRes = await gmail.users.messages.send({
       userId: "me",
-      requestBody: { raw }
+      requestBody: { raw },
     });
-    messageId = sendRes.data.id;
   } catch (err) {
     console.error("Gmail send error:", err);
-    return res.status(500).json({ error: "Gmail send error", details: err.message });
+    return res
+      .status(500)
+      .json({ error: "Gmail send error", details: err.message });
   }
 
-  // Apply the custom label to the sent message
+  const messageId = sendRes.data.id;
+  const threadId  = sendRes.data.threadId;
+
+  // 8) Apply the custom label
   try {
     await gmail.users.messages.modify({
       userId: "me",
       id: messageId,
-      requestBody: { addLabelIds: [meetingSchedulerLabelId] }
+      requestBody: { addLabelIds: [meetingSchedulerLabelId] },
     });
   } catch (err) {
     console.error("Error labeling message:", err);
-    return res.status(500).json({ error: "Labeling error", details: err.message });
+    return res
+      .status(500)
+      .json({ error: "Labeling error", details: err.message });
   }
 
-  const threadId = sendRes.data.threadId;
+  // 9) Persist the new thread in your database
+  try {
+    await prisma.meetingThread.create({
+      data: {
+        threadId,
+        userId:        session.user.email, // or session.user.id
+        attendeeEmail: email,
+        subject,
+        slots:         JSON.stringify(slots),
+      },
+    });
+  } catch (err) {
+    console.error("DB write error:", err);
+    return res
+      .status(500)
+      .json({ error: "Database error", details: err.message });
+  }
 
-  // 6) Persist mapping in DB
-  await prisma.meetingThread.create({
-    data: {
-      threadId,
-      userId:        session.user.email,       // or session.user.id if you expose it
-      attendeeEmail: email,
-      subject,
-      slots:         JSON.stringify(slots)
-    }
-  });
-
-  // 7) Return success
-  return res.status(200).json({ message: "Proposal sent, labeled & recorded!", draft });
- }
+  // 10) Return success
+  return res
+    .status(200)
+    .json({ message: "Proposal sent, labeled & recorded!", draft });
+}
